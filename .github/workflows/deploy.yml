@@ -1,4 +1,4 @@
-name: Pipeline CI/CD Innovatech Despacho
+name: CI/CD Backend Despacho AWS
 
 on:
   push:
@@ -6,33 +6,38 @@ on:
       - deploy
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout del código
         uses: actions/checkout@v3
 
-      - name: Login en Docker Hub
-        uses: docker/login-action@v2
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v2
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Build y Push de la imagen Docker
+      - name: Login en Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build y Push de la imagen a ECR
         run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/backend-despacho:latest .
-          docker push ${{ secrets.DOCKER_USERNAME }}/backend-despacho:latest
+          docker build -t ${{ secrets.ECR_REPO_URL_BACKEND_DESPACHO }}:latest .
+          docker push ${{ secrets.ECR_REPO_URL_BACKEND_DESPACHO }}:latest
 
-      - name: Despliegue en EC2
-        uses: appleboy/ssh-action@v0.1.7
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            docker pull ${{ secrets.DOCKER_USERNAME }}/backend-despacho:latest
-            docker stop backend-despacho || true
-            docker rm backend-despacho || true
-            docker run -d --name backend-despacho -p 8080:8080 ${{ secrets.DOCKER_USERNAME }}/backend-despacho:latest
-            docker image prune -f
+      - name: Despliegue en EC2 vía AWS SSM
+        run: |
+          aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_DESPACHO_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=[
+              "aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}",
+              "docker pull ${{ secrets.ECR_REPO_URL_BACKEND_DESPACHO }}:latest",
+              "docker stop app-despacho || true",
+              "docker rm app-despacho || true",
+              "docker run -d --name app-despacho -p 8080:8080 ${{ secrets.ECR_REPO_URL_BACKEND_DESPACHO }}:latest",
+              "docker image prune -f"
+            ]'
